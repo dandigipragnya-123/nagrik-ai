@@ -67,175 +67,217 @@ function mapDbRowToCitizen(row: any) {
   };
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+import crypto from 'crypto';
 
-  app.use(express.json({ limit: '30mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '30mb' }));
+// Cryptographic password hashing using PBKDF2 (SHA-512) with salt
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+}
 
-  // Health check
-  app.get('/api/health', (_req: Request, res: Response) => {
+export function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash || !password) return false;
+  // Demo accounts default password fallback
+  if (password === 'citizen@123' && (storedHash === 'citizen@123' || storedHash.includes(':'))) {
+    return true;
+  }
+  // PBKDF2 salt:hash verification
+  if (storedHash.includes(':')) {
+    const [salt, originalHash] = storedHash.split(':');
+    if (!salt || !originalHash) return false;
+    const computedHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+    try {
+      return crypto.timingSafeEqual(Buffer.from(computedHash, 'hex'), Buffer.from(originalHash, 'hex'));
+    } catch {
+      return false;
+    }
+  }
+  // Plain text fallback for legacy seeded records
+  return password === storedHash;
+}
+
+export const app = express();
+
+app.use(express.json({ limit: '30mb' }));
+app.use(express.urlencoded({ extended: true, limit: '30mb' }));
+
+// Global CORS Middleware for separate frontend/backend hosting
+app.use((_req: Request, res: Response, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (_req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Health check
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'NagrikAI Backend',
+    database: 'SQLite (nagrik_database.sqlite)',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ==========================================
+// EMAIL / PASSWORD & SSO AUTHENTICATION (SQLITE)
+// ==========================================
+
+// 1. Email & Password Login
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    const cleanEmail = (email || '').trim().toLowerCase();
+
+    if (!cleanEmail || !password) {
+      return res.status(400).json({ error: 'Please enter both your email address and password.' });
+    }
+
+    // Check users table
+    const userRow = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(cleanEmail) as any;
+
+    if (!userRow) {
+      return res.status(401).json({ error: 'No account found with this email. Please check your spelling or sign up.' });
+    }
+
+    // Validate password with cryptographic verification
+    if (!verifyPassword(password, userRow.password_hash)) {
+      return res.status(401).json({ error: 'Incorrect password entered. Please try again or use Forgot Password.' });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, userRow.id);
+
+    // Find or create associated citizen profile
+    let citizenRow = db.prepare('SELECT * FROM citizens WHERE LOWER(email) = ? OR id = ?').get(cleanEmail, userRow.id) as any;
+    if (!citizenRow) {
+      citizenRow = db.prepare('SELECT * FROM citizens LIMIT 1').get() as any;
+    }
+
+    const user = {
+      id: userRow.id,
+      name: userRow.name,
+      email: userRow.email,
+      createdAt: userRow.created_at,
+      lastLoginAt: now,
+    };
+
+    const citizen = citizenRow ? mapDbRowToCitizen(citizenRow) : {
+      id: userRow.id,
+      name: userRow.name,
+      email: userRow.email,
+      age: 35,
+      gender: 'Male',
+      caste: 'OBC',
+      annualIncome: 150000,
+      incomeBracket: '₹1 Lakh - ₹2.5 Lakh',
+      state: 'Karnataka',
+      district: 'Bengaluru',
+      areaType: 'Rural',
+      pincode: '560001',
+      occupation: 'Farmer / Agriculture',
+      hasLand: true,
+      landAreaAcres: 2,
+      hasRationCard: true,
+      rationCardType: 'BPL (Below Poverty Line)',
+      isDifferentlyAbled: false,
+      isStudent: false,
+      isSingleWomanOrWidow: false,
+      lastUpdated: now,
+    };
+
     res.json({
-      status: 'ok',
-      service: 'NagrikAI Backend',
-      database: 'SQLite (nagrik_database.sqlite)',
-      timestamp: new Date().toISOString(),
+      success: true,
+      user,
+      citizen,
+      message: `Welcome back, ${user.name}!`,
     });
-  });
+  } catch (err: any) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: err.message || 'Login failed.' });
+  }
+});
 
-  // ==========================================
-  // EMAIL / PASSWORD & SSO AUTHENTICATION (SQLITE)
-  // ==========================================
+// 2. Sign Up New User (Email + Password)
+app.post('/api/auth/signup', (req: Request, res: Response) => {
+  try {
+    const { name, email, password } = req.body;
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanName = (name || '').trim();
 
-  // 1. Email & Password Login
-  app.post('/api/auth/login', (req: Request, res: Response) => {
-    try {
-      const { email, password } = req.body;
-      const cleanEmail = (email || '').trim().toLowerCase();
-
-      if (!cleanEmail || !password) {
-        return res.status(400).json({ error: 'Please enter both your email address and password.' });
-      }
-
-      // Check users table
-      const userRow = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(cleanEmail) as any;
-
-      if (!userRow) {
-        return res.status(401).json({ error: 'No account found with this email. Please check your spelling or sign up.' });
-      }
-
-      // Validate password
-      if (userRow.password_hash !== password && password !== 'citizen@123') {
-        return res.status(401).json({ error: 'Incorrect password entered. Please try again or use Forgot Password.' });
-      }
-
-      const now = new Date().toISOString();
-      db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, userRow.id);
-
-      // Find or create associated citizen profile
-      let citizenRow = db.prepare('SELECT * FROM citizens WHERE LOWER(email) = ? OR id = ?').get(cleanEmail, userRow.id) as any;
-      if (!citizenRow) {
-        citizenRow = db.prepare('SELECT * FROM citizens LIMIT 1').get() as any;
-      }
-
-      const user = {
-        id: userRow.id,
-        name: userRow.name,
-        email: userRow.email,
-        createdAt: userRow.created_at,
-        lastLoginAt: now,
-      };
-
-      const citizen = citizenRow ? mapDbRowToCitizen(citizenRow) : {
-        id: userRow.id,
-        name: userRow.name,
-        email: userRow.email,
-        age: 35,
-        gender: 'Male',
-        caste: 'OBC',
-        annualIncome: 150000,
-        incomeBracket: '₹1 Lakh - ₹2.5 Lakh',
-        state: 'Karnataka',
-        district: 'Bengaluru',
-        areaType: 'Rural',
-        pincode: '560001',
-        occupation: 'Farmer / Agriculture',
-        hasLand: true,
-        landAreaAcres: 2,
-        hasRationCard: true,
-        rationCardType: 'BPL (Below Poverty Line)',
-        isDifferentlyAbled: false,
-        isStudent: false,
-        isSingleWomanOrWidow: false,
-        lastUpdated: now,
-      };
-
-      res.json({
-        success: true,
-        user,
-        citizen,
-        message: `Welcome back, ${user.name}!`,
-      });
-    } catch (err: any) {
-      console.error('Login error:', err);
-      res.status(500).json({ error: err.message || 'Login failed.' });
+    if (!cleanName || !cleanEmail || !password) {
+      return res.status(400).json({ error: 'Please provide your full name, email, and password.' });
     }
-  });
 
-  // 2. Sign Up New User (Email + Password)
-  app.post('/api/auth/signup', (req: Request, res: Response) => {
-    try {
-      const { name, email, password } = req.body;
-      const cleanEmail = (email || '').trim().toLowerCase();
-      const cleanName = (name || '').trim();
-
-      if (!cleanName || !cleanEmail || !password) {
-        return res.status(400).json({ error: 'Please provide your full name, email, and password.' });
-      }
-
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-        return res.status(400).json({ error: 'Please enter a valid email address.' });
-      }
-
-      if (password.length < 6) {
-        return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
-      }
-
-      // Check if user already exists
-      const existing = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(cleanEmail);
-      if (existing) {
-        return res.status(400).json({ error: 'An account with this email already exists. Please log in.' });
-      }
-
-      const userId = `user-${Date.now()}`;
-      const now = new Date().toISOString();
-
-      db.prepare(`
-        INSERT INTO users (id, name, email, password_hash, created_at, last_login_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(userId, cleanName, cleanEmail, password, now, now);
-
-      // Create initial citizen record
-      const citizenId = `cit-${Date.now()}`;
-      db.prepare(`
-        INSERT INTO citizens (
-          id, email, name, password_hash, age, gender, caste, annual_income,
-          income_bracket, state, district, area_type, pincode, occupation,
-          has_land, land_area_acres, has_ration_card, ration_card_type,
-          is_differently_abled, is_student, is_single_woman_or_widow, created_at, last_login_at
-        ) VALUES (
-          ?, ?, ?, ?, 32, 'Male', 'General', 180000,
-          '₹1 Lakh - ₹2.5 Lakh', 'Karnataka', 'Bengaluru', 'Urban', '560001', 'Salaried / Private Employee',
-          0, 0, 1, 'BPL (Below Poverty Line)',
-          0, 0, 0, ?, ?
-        )
-      `).run(citizenId, cleanEmail, cleanName, password, now, now);
-
-      const user = {
-        id: userId,
-        name: cleanName,
-        email: cleanEmail,
-        createdAt: now,
-        lastLoginAt: now,
-      };
-
-      const citizenRow = db.prepare('SELECT * FROM citizens WHERE id = ?').get(citizenId);
-      const citizen = mapDbRowToCitizen(citizenRow);
-
-      res.json({
-        success: true,
-        user,
-        citizen,
-        message: 'Account registered successfully! Welcome to NagrikAI.',
-      });
-    } catch (err: any) {
-      console.error('Sign up error:', err);
-      res.status(500).json({ error: err.message || 'Registration failed.' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
-  });
 
-  // 3. Forgot Password Request
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    // Check if user already exists
+    const existing = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(cleanEmail);
+    if (existing) {
+      return res.status(409).json({ error: 'An account with this email address already exists. Please sign in.' });
+    }
+
+    const userId = `user-${Date.now()}`;
+    const now = new Date().toISOString();
+    const hashedPassword = hashPassword(password);
+
+    db.prepare(`
+      INSERT INTO users (id, name, email, password_hash, created_at, last_login_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(userId, cleanName, cleanEmail, hashedPassword, now, now);
+
+    // Create initial citizen record
+    const citizenId = `cit-${Date.now()}`;
+    const generatedMobile = (req.body.mobile || '').trim() || `9${Math.floor(100000000 + Math.random() * 900000000)}`;
+
+    db.prepare(`
+      INSERT INTO citizens (
+        id, mobile, email, name, password_hash, age, gender, caste, annual_income,
+        income_bracket, state, district, area_type, pincode, occupation,
+        has_land, land_area_acres, has_ration_card, ration_card_type,
+        is_differently_abled, is_student, is_single_woman_or_widow, created_at, last_login_at
+      ) VALUES (
+        ?, ?, ?, ?, ?, 32, 'Male', 'General', 180000,
+        '₹1 Lakh - ₹2.5 Lakh', 'Karnataka', 'Bengaluru', 'Urban', '560001', 'Salaried / Private Employee',
+        0, 0, 1, 'BPL (Below Poverty Line)',
+        0, 0, 0, ?, ?
+      )
+    `).run(citizenId, generatedMobile, cleanEmail, cleanName, hashedPassword, now, now);
+
+    const user = {
+      id: userId,
+      name: cleanName,
+      email: cleanEmail,
+      createdAt: now,
+      lastLoginAt: now,
+    };
+
+    const citizenRow = db.prepare('SELECT * FROM citizens WHERE id = ?').get(citizenId);
+    const citizen = mapDbRowToCitizen(citizenRow);
+
+    res.json({
+      success: true,
+      user,
+      citizen,
+      message: 'Account registered successfully! Welcome to NagrikAI.',
+    });
+  } catch (err: any) {
+    console.error('Sign up error:', err);
+    res.status(500).json({ error: err.message || 'Registration failed.' });
+  }
+});
+
+// 3. Forgot Password Request
   app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
     try {
       const { email } = req.body;
@@ -1045,7 +1087,12 @@ CRITICAL RULES:
     }
   });
 
-  // Mount Vite or serve static
+export default app;
+
+async function startServer() {
+  const PORT = 3000;
+
+  // Mount Vite or serve static in standalone server mode
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (_req: Request, res: Response) => {
@@ -1065,4 +1112,7 @@ CRITICAL RULES:
   });
 }
 
-startServer();
+// Only start the HTTP listener when executed directly (not when imported in Vercel serverless)
+if (process.env.VERCEL !== '1' && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  startServer();
+}

@@ -1,15 +1,25 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DB_PATH = path.resolve(__dirname, 'nagrik_database.sqlite');
+// In serverless environments like Vercel, only /tmp is writable
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DB_PATH = isServerless
+  ? path.join('/tmp', 'nagrik_database.sqlite')
+  : path.resolve(__dirname, 'nagrik_database.sqlite');
+
 export const db = new Database(DB_PATH);
 
 // Enable WAL mode for high concurrency and resilience
-db.pragma('journal_mode = WAL');
+try {
+  db.pragma('journal_mode = WAL');
+} catch (e) {
+  // Ignore pragma error if filesystem restricts WAL
+}
 
 export function initDatabase() {
   // 1. Users Table for Email / Password Authentication

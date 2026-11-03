@@ -23,6 +23,7 @@ import {
   Scheme,
   DocumentAnalysis
 } from './types';
+import { apiClient } from './utils/apiClient';
 
 export default function App() {
   const [language, setLanguage] = useState<SupportedLanguage>(() => {
@@ -105,36 +106,27 @@ export default function App() {
 
   const fetchUserDataFromDb = async (citizenId: string) => {
     // 1. Fetch saved schemes
-    try {
-      const res = await fetch(`/api/user/saved-schemes?citizenId=${encodeURIComponent(citizenId)}`);
-      const data = await res.json();
-      if (data.success && data.savedSchemes) {
-        setSavedSchemes(data.savedSchemes);
-      }
-    } catch (err) {
-      console.warn('Error fetching saved schemes from SQLite:', err);
+    const resSchemes = await apiClient.get<{ savedSchemes?: SavedScheme[] }>(
+      `/api/user/saved-schemes?citizenId=${encodeURIComponent(citizenId)}`
+    );
+    if (resSchemes.success && resSchemes.data?.savedSchemes) {
+      setSavedSchemes(resSchemes.data.savedSchemes);
     }
 
     // 2. Fetch document analysis history
-    try {
-      const res = await fetch(`/api/documents/history/${encodeURIComponent(citizenId)}`);
-      const data = await res.json();
-      if (data.success && data.documents) {
-        setRecentDocuments(data.documents);
-      }
-    } catch (err) {
-      console.warn('Error fetching document history from SQLite:', err);
+    const resDocs = await apiClient.get<{ documents?: any[] }>(
+      `/api/documents/history/${encodeURIComponent(citizenId)}`
+    );
+    if (resDocs.success && resDocs.data?.documents) {
+      setRecentDocuments(resDocs.data.documents);
     }
 
     // 3. Fetch tracked applications
-    try {
-      const res = await fetch(`/api/applications/${encodeURIComponent(citizenId)}`);
-      const data = await res.json();
-      if (data.success && data.applications) {
-        setApplications(data.applications);
-      }
-    } catch (err) {
-      console.warn('Error fetching applications from SQLite:', err);
+    const resApps = await apiClient.get<{ applications?: TrackedApplication[] }>(
+      `/api/applications/${encodeURIComponent(citizenId)}`
+    );
+    if (resApps.success && resApps.data?.applications) {
+      setApplications(resApps.data.applications);
     }
   };
 
@@ -155,72 +147,48 @@ export default function App() {
   };
 
   const handleUpdateCitizenProfile = async (updatedProfile: CitizenProfile) => {
-    try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedProfile),
-      });
-      const data = await res.json();
-      if (data.success && data.citizen) {
-        setCitizen(data.citizen);
-        showToast('Profile updated & synchronized in SQLite.');
-      } else {
-        setCitizen(updatedProfile);
-      }
-    } catch (err) {
+    const result = await apiClient.post<{ citizen?: CitizenProfile }>('/api/auth/register', updatedProfile);
+    if (result.success && result.data?.citizen) {
+      setCitizen(result.data.citizen);
+      showToast('Profile updated & synchronized in SQLite.');
+    } else {
       setCitizen(updatedProfile);
+      if (result.error) showToast(result.error);
     }
   };
 
   const handleSaveScheme = async (scheme: Scheme, status: 'Likely Eligible' | 'May Be Eligible' | 'Not Eligible') => {
     const citizenId = citizen?.id || user?.id || 'cit-ramesh-01';
-    try {
-      const res = await fetch('/api/user/saved-schemes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          citizenId,
-          schemeId: scheme.id,
-          schemeName: scheme.name,
-          ministry: scheme.ministry,
-          benefits: scheme.benefitsSummary,
-          eligibilityStatus: status,
-          officialPortal: scheme.officialPortalUrl,
-        }),
-      });
-      const data = await res.json();
-      if (data.success && data.savedScheme) {
-        setSavedSchemes((prev) => [data.savedScheme, ...prev]);
-        showToast(`Saved "${scheme.name}" to your SQLite records!`);
+    const result = await apiClient.post<{ savedScheme?: SavedScheme }>('/api/user/saved-schemes', {
+      citizenId,
+      schemeId: scheme.id,
+      schemeName: scheme.name || scheme.title,
+      ministry: scheme.ministry || scheme.ministryOrState,
+      benefits: scheme.benefitsSummary || scheme.financialBenefit,
+      eligibilityStatus: status,
+      officialPortal: scheme.officialPortalUrl || scheme.officialSource,
+    });
+
+    if (result.success) {
+      if (result.data?.savedScheme) {
+        setSavedSchemes((prev) => [result.data!.savedScheme!, ...prev]);
       }
-    } catch (err) {
-      console.warn('Could not save scheme to SQLite:', err);
+      showToast(`Saved "${scheme.name || scheme.title}" to your SQLite records!`);
+    } else if (result.error) {
+      showToast(result.error);
     }
   };
 
   const handleRemoveSavedScheme = async (id: string) => {
     setSavedSchemes((prev) => prev.filter((s) => s.id !== id));
-    try {
-      await fetch(`/api/user/saved-schemes/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
-      showToast('Scheme removed from saved records.');
-    } catch (err) {
-      console.warn('Could not delete saved scheme in SQLite:', err);
-    }
+    await apiClient.delete(`/api/user/saved-schemes/${encodeURIComponent(id)}`);
+    showToast('Scheme removed from saved records.');
   };
 
   const handleDeleteDocument = async (id: string) => {
     setRecentDocuments((prev) => prev.filter((d) => d.id !== id));
-    try {
-      await fetch(`/api/documents/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
-      showToast('Document record deleted permanently from SQLite.');
-    } catch (err) {
-      console.warn('Could not delete document record in SQLite:', err);
-    }
+    await apiClient.delete(`/api/documents/${encodeURIComponent(id)}`);
+    showToast('Document record deleted permanently from SQLite.');
   };
 
   const handleDocumentAnalyzed = (analysis: DocumentAnalysis) => {
@@ -241,18 +209,14 @@ export default function App() {
 
   const handleAddApplication = async (newApp: TrackedApplication) => {
     setApplications((prev) => [newApp, ...prev]);
-    try {
-      await fetch('/api/applications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...newApp,
-          citizenId: citizen?.id || 'cit-ramesh-01',
-        }),
-      });
+    const result = await apiClient.post('/api/applications', {
+      ...newApp,
+      citizenId: citizen?.id || 'cit-ramesh-01',
+    });
+    if (result.success) {
       showToast('Application record created in SQLite.');
-    } catch (err) {
-      console.warn('Could not save application in SQLite:', err);
+    } else if (result.error) {
+      showToast(result.error);
     }
   };
 
@@ -260,28 +224,14 @@ export default function App() {
     setApplications((prev) =>
       prev.map((app) => (app.id === id ? { ...app, status } : app))
     );
-    try {
-      await fetch(`/api/applications/${encodeURIComponent(id)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
-      });
-      showToast(`Application status updated to ${status}.`);
-    } catch (err) {
-      console.warn('Could not update application status in SQLite:', err);
-    }
+    await apiClient.put(`/api/applications/${encodeURIComponent(id)}`, { status });
+    showToast(`Application status updated to ${status}.`);
   };
 
   const handleDeleteApplication = async (id: string) => {
     setApplications((prev) => prev.filter((app) => app.id !== id));
-    try {
-      await fetch(`/api/applications/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
-      showToast('Application record removed.');
-    } catch (err) {
-      console.warn('Could not delete application in SQLite:', err);
-    }
+    await apiClient.delete(`/api/applications/${encodeURIComponent(id)}`);
+    showToast('Application record removed.');
   };
 
   const handleOpenVoiceWithContext = (summaryText: string) => {

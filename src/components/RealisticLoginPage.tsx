@@ -19,6 +19,7 @@ import {
 import { CitizenProfile, SupportedLanguage, CasteCategory, OccupationType } from '../types';
 import { UI_TRANSLATIONS } from '../data/translations';
 import { ALL_SCHEMES, evaluateSchemeEligibility } from '../data/schemesData';
+import { apiClient } from '../utils/apiClient';
 
 interface RealisticLoginPageProps {
   onLoginSuccess: (citizen: CitizenProfile) => void;
@@ -80,20 +81,17 @@ export const RealisticLoginPage: React.FC<RealisticLoginPageProps> = ({
     setLoading(true);
 
     try {
-      const res = await fetch('/api/auth/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mobile }),
+      const result = await apiClient.post<{ simulatedOtp?: string; message?: string }>('/api/auth/send-otp', {
+        mobile,
       });
-      const data = await res.json();
 
-      if (data.success) {
+      if (result.success && result.data) {
         setOtpSent(true);
-        setSimulatedOtpNotice(data.simulatedOtp);
-        setOtp(data.simulatedOtp || '123456');
-        setSuccessMessage(data.message);
+        setSimulatedOtpNotice(result.data.simulatedOtp || '123456');
+        setOtp(result.data.simulatedOtp || '123456');
+        setSuccessMessage(result.data.message || 'OTP generated successfully.');
       } else {
-        throw new Error(data.error || 'Failed to send OTP');
+        setErrorMessage(result.error || 'Failed to send OTP.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Error communicating with SQLite backend.');
@@ -109,24 +107,21 @@ export const RealisticLoginPage: React.FC<RealisticLoginPageProps> = ({
     setLoading(true);
 
     try {
-      const res = await fetch('/api/auth/verify-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mobile, otp }),
+      const result = await apiClient.post<{ registered?: boolean; citizen?: CitizenProfile; mobile?: string }>('/api/auth/verify-otp', {
+        mobile,
+        otp,
       });
-      const data = await res.json();
 
-      if (data.success) {
-        if (data.registered && data.citizen) {
-          onLoginSuccess(data.citizen);
+      if (result.success && result.data) {
+        if (result.data.registered && result.data.citizen) {
+          onLoginSuccess(result.data.citizen);
         } else {
-          // Switch to registration tab with mobile pre-filled
-          setRegMobile(data.mobile);
+          setRegMobile(result.data.mobile || mobile);
           setAuthMethod('register');
           setSuccessMessage('Mobile verified! Please confirm your citizen demographic details to store in SQLite.');
         }
       } else {
-        throw new Error(data.error || 'Invalid OTP');
+        setErrorMessage(result.error || 'Invalid OTP entered. Please try again.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'OTP verification failed');
@@ -142,17 +137,15 @@ export const RealisticLoginPage: React.FC<RealisticLoginPageProps> = ({
     setLoading(true);
 
     try {
-      const res = await fetch('/api/auth/login-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: mobile, password }),
+      const result = await apiClient.post<{ citizen?: CitizenProfile }>('/api/auth/login-password', {
+        identifier: mobile,
+        password,
       });
-      const data = await res.json();
 
-      if (data.success && data.citizen) {
-        onLoginSuccess(data.citizen);
+      if (result.success && result.data?.citizen) {
+        onLoginSuccess(result.data.citizen);
       } else {
-        throw new Error(data.error || 'Login failed');
+        setErrorMessage(result.error || 'Invalid credentials.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Invalid credentials');
@@ -190,17 +183,12 @@ export const RealisticLoginPage: React.FC<RealisticLoginPageProps> = ({
     };
 
     try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newCitizenProfile),
-      });
-      const data = await res.json();
+      const result = await apiClient.post<{ citizen?: CitizenProfile }>('/api/auth/register', newCitizenProfile);
 
-      if (data.success && data.citizen) {
-        onLoginSuccess(data.citizen);
+      if (result.success && result.data?.citizen) {
+        onLoginSuccess(result.data.citizen);
       } else {
-        throw new Error(data.error || 'Registration failed');
+        setErrorMessage(result.error || 'Registration failed.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Error saving to SQLite database.');

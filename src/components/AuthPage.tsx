@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { User as UserType, CitizenProfile, SupportedLanguage } from '../types';
 import { UI_TRANSLATIONS } from '../data/translations';
+import { apiClient } from '../utils/apiClient';
 
 interface AuthPageProps {
   onAuthSuccess: (user: UserType, citizen: CitizenProfile) => void;
@@ -43,18 +44,18 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess, language }) =
     setPassword('citizen@123');
     setLoading(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
 
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: demoEmail, password: 'citizen@123' }),
+      const result = await apiClient.post<{ user: UserType; citizen: CitizenProfile }>('/api/auth/login', {
+        email: demoEmail,
+        password: 'citizen@123',
       });
-      const data = await res.json();
-      if (data.success && data.user && data.citizen) {
-        onAuthSuccess(data.user, data.citizen);
+
+      if (result.success && result.data?.user && result.data?.citizen) {
+        onAuthSuccess(result.data.user, result.data.citizen);
       } else {
-        throw new Error(data.error || 'Login failed');
+        setErrorMessage(result.error || 'Demo login failed. Please try again.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Error communicating with database.');
@@ -68,24 +69,28 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess, language }) =
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    if (!email.trim() || !password) {
-      setErrorMessage('Please fill in both your email and password.');
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !password) {
+      setErrorMessage('Please fill in both your email address and password.');
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMessage('Please enter a valid email address (e.g. name@example.com).');
       return;
     }
 
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password }),
+      const result = await apiClient.post<{ user: UserType; citizen: CitizenProfile }>('/api/auth/login', {
+        email: cleanEmail,
+        password,
       });
-      const data = await res.json();
 
-      if (data.success && data.user && data.citizen) {
-        onAuthSuccess(data.user, data.citizen);
+      if (result.success && result.data?.user && result.data?.citizen) {
+        onAuthSuccess(result.data.user, result.data.citizen);
       } else {
-        throw new Error(data.error || 'Invalid credentials');
+        setErrorMessage(result.error || 'Unable to sign in. Please verify your credentials.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Unable to log in. Please check your credentials.');
@@ -99,34 +104,36 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess, language }) =
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    if (!name.trim()) {
-      setErrorMessage('Please enter your full name.');
+    const cleanName = name.trim();
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanName) {
+      setErrorMessage('Please enter your full legal name.');
       return;
     }
 
-    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setErrorMessage('Please enter a valid email address.');
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMessage('Please enter a valid email address (e.g. name@example.com).');
       return;
     }
 
     if (!password || password.length < 6) {
-      setErrorMessage('Password must be at least 6 characters.');
+      setErrorMessage('Password must be at least 6 characters long.');
       return;
     }
 
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), email: email.trim(), password }),
+      const result = await apiClient.post<{ user: UserType; citizen: CitizenProfile }>('/api/auth/signup', {
+        name: cleanName,
+        email: cleanEmail,
+        password,
       });
-      const data = await res.json();
 
-      if (data.success && data.user && data.citizen) {
-        onAuthSuccess(data.user, data.citizen);
+      if (result.success && result.data?.user && result.data?.citizen) {
+        onAuthSuccess(result.data.user, result.data.citizen);
       } else {
-        throw new Error(data.error || 'Registration failed');
+        setErrorMessage(result.error || 'Registration failed. Please check your information and try again.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Unable to complete sign up. Please try again.');
@@ -140,20 +147,23 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess, language }) =
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    if (!email.trim()) {
-      setErrorMessage('Please enter your email address to receive reset instructions.');
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMessage('Please enter a valid registered email address to receive reset instructions.');
       return;
     }
 
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/forgot-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim() }),
+      const result = await apiClient.post<{ message?: string }>('/api/auth/forgot-password', {
+        email: cleanEmail,
       });
-      const data = await res.json();
-      setSuccessMessage(data.message || 'Password reset link sent to your email.');
+
+      if (result.success) {
+        setSuccessMessage(result.data?.message || 'Password reset instructions have been sent to your email.');
+      } else {
+        setErrorMessage(result.error || 'Unable to process reset request. Please check the email entered.');
+      }
     } catch (err: any) {
       setErrorMessage(err.message || 'Error processing request.');
     } finally {
