@@ -1,0 +1,6 @@
+{
+  "name": "NagrikAI - Citizen Assistance & Scheme Portal",
+  "description": "AI-powered citizen assistance platform to simplify complex Indian official documents, detect deadlines, guide verification, and automatically match government schemes in regional languages.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
