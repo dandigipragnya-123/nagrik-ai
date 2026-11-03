@@ -12,11 +12,38 @@ export const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 export function initDatabase() {
-  // 1. Citizens Table
+  // 1. Users Table for Email / Password Authentication
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_login_at TEXT NOT NULL
+    );
+  `);
+
+  // 2. Saved Schemes Table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS saved_schemes (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      scheme_id TEXT NOT NULL,
+      scheme_title TEXT NOT NULL,
+      category TEXT NOT NULL,
+      benefit TEXT NOT NULL,
+      status TEXT NOT NULL,
+      saved_at TEXT NOT NULL
+    );
+  `);
+
+  // 3. Citizens Table
   db.exec(`
     CREATE TABLE IF NOT EXISTS citizens (
       id TEXT PRIMARY KEY,
-      mobile TEXT UNIQUE NOT NULL,
+      mobile TEXT UNIQUE,
+      email TEXT UNIQUE,
       name TEXT NOT NULL,
       password_hash TEXT,
       aadhaar_masked TEXT,
@@ -30,6 +57,7 @@ export function initDatabase() {
       area_type TEXT NOT NULL,
       pincode TEXT NOT NULL,
       occupation TEXT NOT NULL,
+      education_level TEXT,
       has_land INTEGER NOT NULL,
       land_area_acres REAL DEFAULT 0,
       has_ration_card INTEGER NOT NULL,
@@ -42,7 +70,7 @@ export function initDatabase() {
     );
   `);
 
-  // 2. OTP Verification Sessions
+  // 4. OTP Verification Sessions
   db.exec(`
     CREATE TABLE IF NOT EXISTS otp_sessions (
       mobile TEXT PRIMARY KEY,
@@ -103,6 +131,31 @@ export function initDatabase() {
     );
   `);
 
+  // Safely ensure migration columns exist in existing databases
+  const citizenColumns = ['email', 'password_hash', 'education_level', 'residential_address'];
+  for (const col of citizenColumns) {
+    try {
+      db.exec(`ALTER TABLE citizens ADD COLUMN ${col} TEXT;`);
+    } catch (e) {
+      // column already exists
+    }
+  }
+
+  // Also link emails to existing citizens if empty
+  try {
+    db.exec(`UPDATE citizens SET email = 'ramesh@nagrik.in' WHERE id = 'cit-ramesh-01' AND (email IS NULL OR email = '');`);
+    db.exec(`UPDATE citizens SET email = 'priya@nagrik.in' WHERE id = 'cit-priya-02' AND (email IS NULL OR email = '');`);
+    db.exec(`UPDATE citizens SET email = 'lakshmi@nagrik.in' WHERE id = 'cit-lakshmi-03' AND (email IS NULL OR email = '');`);
+  } catch (e) {
+    // ignore
+  }
+
+  // Seed users if none exist
+  const userCount = db.prepare('SELECT count(*) as count FROM users').get() as { count: number };
+  if (userCount.count === 0) {
+    seedInitialUsers();
+  }
+
   // Seed sample citizens if none exist
   const count = db.prepare('SELECT count(*) as count FROM citizens').get() as { count: number };
   if (count.count === 0) {
@@ -113,6 +166,70 @@ export function initDatabase() {
   if (appCount.count === 0) {
     seedInitialApplications();
   }
+}
+
+function seedInitialUsers() {
+  const insertUser = db.prepare(`
+    INSERT INTO users (id, name, email, password_hash, created_at, last_login_at)
+    VALUES (@id, @name, @email, @password_hash, @created_at, @last_login_at)
+  `);
+
+  const now = new Date().toISOString();
+
+  insertUser.run({
+    id: 'user-ramesh-01',
+    name: 'Ramesh Gowda',
+    email: 'ramesh@nagrik.in',
+    password_hash: 'citizen@123',
+    created_at: now,
+    last_login_at: now,
+  });
+
+  insertUser.run({
+    id: 'user-priya-02',
+    name: 'Priya Kumari',
+    email: 'priya@nagrik.in',
+    password_hash: 'citizen@123',
+    created_at: now,
+    last_login_at: now,
+  });
+
+  insertUser.run({
+    id: 'user-lakshmi-03',
+    name: 'Lakshmi Ammal',
+    email: 'lakshmi@nagrik.in',
+    password_hash: 'citizen@123',
+    created_at: now,
+    last_login_at: now,
+  });
+
+  // Seed initial saved schemes
+  const insertSavedScheme = db.prepare(`
+    INSERT INTO saved_schemes (id, user_id, scheme_id, scheme_title, category, benefit, status, saved_at)
+    VALUES (@id, @user_id, @scheme_id, @scheme_title, @category, @benefit, @status, @saved_at)
+  `);
+
+  insertSavedScheme.run({
+    id: 'saved-1',
+    user_id: 'user-ramesh-01',
+    scheme_id: 'pm-kisan',
+    scheme_title: 'PM Kisan Samman Nidhi (PM-KISAN)',
+    category: 'Agriculture & Farming',
+    benefit: '₹6,000 / year (Direct DBT)',
+    status: 'Likely Eligible',
+    saved_at: now,
+  });
+
+  insertSavedScheme.run({
+    id: 'saved-2',
+    user_id: 'user-ramesh-01',
+    scheme_id: 'pm-jay',
+    scheme_title: 'Ayushman Bharat Pradhan Mantri Jan Arogya Yojana (PM-JAY)',
+    category: 'Healthcare & Insurance',
+    benefit: '₹5,00,000 / family / year cashless hospitalization',
+    status: 'Likely Eligible',
+    saved_at: now,
+  });
 }
 
 function seedInitialApplications() {

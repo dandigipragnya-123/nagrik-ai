@@ -767,7 +767,7 @@ export const DocumentSimplifier: React.FC<DocumentSimplifierProps> = ({
                   <span>{t.verifiedOfficial}</span>
                 </div>
                 <div className="space-y-2">
-                  {analysisResult.verificationGuidance?.officialPortals?.map((portal, pIdx) => (
+                  {analysisResult.verificationGuidance?.officialPortals?.map((portal: any, pIdx: number) => (
                     <a
                       key={pIdx}
                       href={portal.url}

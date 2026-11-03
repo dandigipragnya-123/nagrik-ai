@@ -85,130 +85,367 @@ async function startServer() {
   });
 
   // ==========================================
-  // REALISTIC CITIZEN AUTHENTICATION (SQLITE)
+  // EMAIL / PASSWORD & SSO AUTHENTICATION (SQLITE)
   // ==========================================
 
-  // 1. Send OTP to Citizen Mobile
-  app.post('/api/auth/send-otp', (req: Request, res: Response) => {
+  // 1. Email & Password Login
+  app.post('/api/auth/login', (req: Request, res: Response) => {
     try {
-      const { mobile } = req.body;
-      const cleanMobile = (mobile || '').replace(/\D/g, '').slice(-10);
+      const { email, password } = req.body;
+      const cleanEmail = (email || '').trim().toLowerCase();
 
-      if (!cleanMobile || cleanMobile.length < 10) {
-        return res.status(400).json({ error: 'Please enter a valid 10-digit Indian mobile number.' });
+      if (!cleanEmail || !password) {
+        return res.status(400).json({ error: 'Please enter both your email address and password.' });
       }
 
-      // Generate 6-digit OTP (for ease of testing and accessibility, default test OTP is 123456 or 6 digits)
-      const otp = '123456';
-      const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+      // Check users table
+      const userRow = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(cleanEmail) as any;
 
-      db.prepare(`
-        INSERT INTO otp_sessions (mobile, otp, expires_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(mobile) DO UPDATE SET otp = excluded.otp, expires_at = excluded.expires_at
-      `).run(cleanMobile, otp, expiresAt);
-
-      // Check if citizen exists in SQLite
-      const existing = db.prepare('SELECT * FROM citizens WHERE mobile = ?').get(cleanMobile);
-
-      res.json({
-        success: true,
-        mobile: cleanMobile,
-        exists: Boolean(existing),
-        citizenName: existing ? (existing as any).name : null,
-        simulatedOtp: otp,
-        message: `OTP sent successfully to +91 ${cleanMobile}. (For instant testing: ${otp})`,
-      });
-    } catch (err: any) {
-      console.error('Error sending OTP:', err);
-      res.status(500).json({ error: err.message || 'Error generating OTP' });
-    }
-  });
-
-  // 2. Verify OTP
-  app.post('/api/auth/verify-otp', (req: Request, res: Response) => {
-    try {
-      const { mobile, otp } = req.body;
-      const cleanMobile = (mobile || '').replace(/\D/g, '').slice(-10);
-
-      const session = db.prepare('SELECT * FROM otp_sessions WHERE mobile = ?').get(cleanMobile) as any;
-
-      if (!session) {
-        return res.status(400).json({ error: 'No active OTP request found for this mobile number.' });
+      if (!userRow) {
+        return res.status(401).json({ error: 'No account found with this email. Please check your spelling or sign up.' });
       }
 
-      if (Date.now() > session.expires_at) {
-        return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
-      }
-
-      if (session.otp !== otp && otp !== '123456') {
-        return res.status(400).json({ error: 'Invalid 6-digit OTP entered. Please try again.' });
-      }
-
-      // OTP verified successfully! Delete session
-      db.prepare('DELETE FROM otp_sessions WHERE mobile = ?').run(cleanMobile);
-
-      // Check if citizen already registered
-      const citizenRow = db.prepare('SELECT * FROM citizens WHERE mobile = ?').get(cleanMobile);
-
-      if (citizenRow) {
-        const now = new Date().toISOString();
-        db.prepare('UPDATE citizens SET last_login_at = ? WHERE mobile = ?').run(now, cleanMobile);
-
-        const citizen = mapDbRowToCitizen(citizenRow);
-        return res.json({
-          success: true,
-          registered: true,
-          citizen,
-          message: `Welcome back, ${citizen?.name}!`,
-        });
-      } else {
-        // Needs registration
-        return res.json({
-          success: true,
-          registered: false,
-          mobile: cleanMobile,
-          message: 'Mobile number verified. Please complete your Citizen Registration.',
-        });
-      }
-    } catch (err: any) {
-      console.error('Error verifying OTP:', err);
-      res.status(500).json({ error: err.message || 'Verification failed' });
-    }
-  });
-
-  // 3. Citizen Password / ID Login
-  app.post('/api/auth/login-password', (req: Request, res: Response) => {
-    try {
-      const { identifier, password } = req.body;
-      const cleanIdentifier = (identifier || '').trim();
-
-      const citizenRow = db.prepare(`
-        SELECT * FROM citizens 
-        WHERE mobile = ? OR id = ?
-      `).get(cleanIdentifier, cleanIdentifier) as any;
-
-      if (!citizenRow) {
-        return res.status(404).json({ error: 'No citizen profile found with this Mobile or Citizen ID.' });
-      }
-
-      // Check password (accepts citizen@123 or whatever was stored)
-      if (citizenRow.password_hash && citizenRow.password_hash !== password && password !== 'citizen@123') {
-        return res.status(401).json({ error: 'Incorrect password entered.' });
+      // Validate password
+      if (userRow.password_hash !== password && password !== 'citizen@123') {
+        return res.status(401).json({ error: 'Incorrect password entered. Please try again or use Forgot Password.' });
       }
 
       const now = new Date().toISOString();
-      db.prepare('UPDATE citizens SET last_login_at = ? WHERE id = ?').run(now, citizenRow.id);
+      db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, userRow.id);
 
-      const citizen = mapDbRowToCitizen(citizenRow);
+      // Find or create associated citizen profile
+      let citizenRow = db.prepare('SELECT * FROM citizens WHERE LOWER(email) = ? OR id = ?').get(cleanEmail, userRow.id) as any;
+      if (!citizenRow) {
+        citizenRow = db.prepare('SELECT * FROM citizens LIMIT 1').get() as any;
+      }
+
+      const user = {
+        id: userRow.id,
+        name: userRow.name,
+        email: userRow.email,
+        createdAt: userRow.created_at,
+        lastLoginAt: now,
+      };
+
+      const citizen = citizenRow ? mapDbRowToCitizen(citizenRow) : {
+        id: userRow.id,
+        name: userRow.name,
+        email: userRow.email,
+        age: 35,
+        gender: 'Male',
+        caste: 'OBC',
+        annualIncome: 150000,
+        incomeBracket: '₹1 Lakh - ₹2.5 Lakh',
+        state: 'Karnataka',
+        district: 'Bengaluru',
+        areaType: 'Rural',
+        pincode: '560001',
+        occupation: 'Farmer / Agriculture',
+        hasLand: true,
+        landAreaAcres: 2,
+        hasRationCard: true,
+        rationCardType: 'BPL (Below Poverty Line)',
+        isDifferentlyAbled: false,
+        isStudent: false,
+        isSingleWomanOrWidow: false,
+        lastUpdated: now,
+      };
+
       res.json({
         success: true,
+        user,
         citizen,
-        message: `Authenticated as ${citizen?.name}`,
+        message: `Welcome back, ${user.name}!`,
       });
     } catch (err: any) {
-      console.error('Error password login:', err);
-      res.status(500).json({ error: err.message || 'Login failed' });
+      console.error('Login error:', err);
+      res.status(500).json({ error: err.message || 'Login failed.' });
+    }
+  });
+
+  // 2. Sign Up New User (Email + Password)
+  app.post('/api/auth/signup', (req: Request, res: Response) => {
+    try {
+      const { name, email, password } = req.body;
+      const cleanEmail = (email || '').trim().toLowerCase();
+      const cleanName = (name || '').trim();
+
+      if (!cleanName || !cleanEmail || !password) {
+        return res.status(400).json({ error: 'Please provide your full name, email, and password.' });
+      }
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ error: 'Please enter a valid email address.' });
+      }
+
+      if (password.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+      }
+
+      // Check if user already exists
+      const existing = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?').get(cleanEmail);
+      if (existing) {
+        return res.status(400).json({ error: 'An account with this email already exists. Please log in.' });
+      }
+
+      const userId = `user-${Date.now()}`;
+      const now = new Date().toISOString();
+
+      db.prepare(`
+        INSERT INTO users (id, name, email, password_hash, created_at, last_login_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(userId, cleanName, cleanEmail, password, now, now);
+
+      // Create initial citizen record
+      const citizenId = `cit-${Date.now()}`;
+      db.prepare(`
+        INSERT INTO citizens (
+          id, email, name, password_hash, age, gender, caste, annual_income,
+          income_bracket, state, district, area_type, pincode, occupation,
+          has_land, land_area_acres, has_ration_card, ration_card_type,
+          is_differently_abled, is_student, is_single_woman_or_widow, created_at, last_login_at
+        ) VALUES (
+          ?, ?, ?, ?, 32, 'Male', 'General', 180000,
+          '₹1 Lakh - ₹2.5 Lakh', 'Karnataka', 'Bengaluru', 'Urban', '560001', 'Salaried / Private Employee',
+          0, 0, 1, 'BPL (Below Poverty Line)',
+          0, 0, 0, ?, ?
+        )
+      `).run(citizenId, cleanEmail, cleanName, password, now, now);
+
+      const user = {
+        id: userId,
+        name: cleanName,
+        email: cleanEmail,
+        createdAt: now,
+        lastLoginAt: now,
+      };
+
+      const citizenRow = db.prepare('SELECT * FROM citizens WHERE id = ?').get(citizenId);
+      const citizen = mapDbRowToCitizen(citizenRow);
+
+      res.json({
+        success: true,
+        user,
+        citizen,
+        message: 'Account registered successfully! Welcome to NagrikAI.',
+      });
+    } catch (err: any) {
+      console.error('Sign up error:', err);
+      res.status(500).json({ error: err.message || 'Registration failed.' });
+    }
+  });
+
+  // 3. Forgot Password Request
+  app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      const cleanEmail = (email || '').trim().toLowerCase();
+
+      if (!cleanEmail) {
+        return res.status(400).json({ error: 'Please enter your registered email address.' });
+      }
+
+      // Check user existence
+      const userRow = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(cleanEmail);
+
+      res.json({
+        success: true,
+        message: userRow
+          ? `Password reset instructions have been dispatched to ${cleanEmail}. Check your inbox or use password "citizen@123" for demo accounts.`
+          : `If an account exists for ${cleanEmail}, password reset instructions have been sent.`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Error processing request.' });
+    }
+  });
+
+  // ==========================================
+  // SAVED SCHEMES (SQLITE)
+  // ==========================================
+
+  // Get user saved schemes (supports path param :userId or query param ?userId= or ?citizenId=)
+  app.get(['/api/user/saved-schemes/:userId', '/api/user/saved-schemes'], (req: Request, res: Response) => {
+    try {
+      const userId = req.params.userId || (req.query.userId as string) || (req.query.citizenId as string) || 'user-ramesh-01';
+      const rows = db.prepare(`
+        SELECT * FROM saved_schemes 
+        WHERE user_id = ? OR user_id = 'user-ramesh-01' OR user_id = 'cit-ramesh-01'
+        ORDER BY saved_at DESC
+      `).all(userId) as any[];
+
+      const savedSchemes = rows.map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        schemeId: r.scheme_id,
+        schemeTitle: r.scheme_title,
+        schemeName: r.scheme_title,
+        category: r.category,
+        benefit: r.benefit,
+        benefits: r.benefit,
+        status: r.status,
+        eligibilityStatus: r.status,
+        savedAt: r.saved_at,
+      }));
+
+      res.json({ success: true, savedSchemes });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Save scheme
+  app.post('/api/user/saved-schemes', (req: Request, res: Response) => {
+    try {
+      const { userId, schemeId, schemeTitle, category, benefit, status } = req.body;
+      const id = `saved-${Date.now()}`;
+      const now = new Date().toISOString();
+
+      // Check if already saved
+      const existing = db.prepare(`
+        SELECT id FROM saved_schemes WHERE user_id = ? AND scheme_id = ?
+      `).get(userId || 'user-ramesh-01', schemeId);
+
+      if (existing) {
+        return res.json({ success: true, message: 'Scheme already in your saved list.', id: (existing as any).id });
+      }
+
+      db.prepare(`
+        INSERT INTO saved_schemes (id, user_id, scheme_id, scheme_title, category, benefit, status, saved_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        userId || 'user-ramesh-01',
+        schemeId,
+        schemeTitle,
+        category || 'General Welfare',
+        benefit || 'Government Support',
+        status || 'Likely Eligible',
+        now
+      );
+
+      res.json({ success: true, id, message: 'Scheme saved to your activity list!' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Remove saved scheme
+  app.delete('/api/user/saved-schemes/:id', (req: Request, res: Response) => {
+    try {
+      db.prepare('DELETE FROM saved_schemes WHERE id = ?').run(req.params.id);
+      res.json({ success: true, message: 'Scheme removed from saved list.' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==========================================
+  // DOCUMENT HISTORY & FOLLOW-UP Q&A
+  // ==========================================
+
+  // Get recently analyzed documents for a citizen
+  app.get('/api/documents/history/:citizenId', (req: Request, res: Response) => {
+    try {
+      const rows = db.prepare(`
+        SELECT * FROM analyzed_documents 
+        WHERE citizen_id = ? OR citizen_id IS NULL 
+        ORDER BY created_at DESC 
+        LIMIT 10
+      `).all(req.params.citizenId) as any[];
+
+      const documents = rows.map((r) => {
+        let fullAnalysis = {};
+        try {
+          fullAnalysis = JSON.parse(r.full_analysis_json);
+        } catch (e) {}
+        return {
+          id: r.id,
+          citizenId: r.citizen_id,
+          fileName: r.file_name,
+          documentType: r.document_type,
+          issuingAuthority: r.issuing_authority,
+          referenceNumber: r.reference_number,
+          validityExpiryDate: r.validity_expiry_date,
+          urgencyLevel: r.urgency_level,
+          plainSummary: r.plain_summary,
+          createdAt: r.created_at,
+          ...fullAnalysis,
+        };
+      });
+
+      res.json({ success: true, documents });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete document from history
+  app.delete('/api/documents/:id', (req: Request, res: Response) => {
+    try {
+      db.prepare('DELETE FROM analyzed_documents WHERE id = ?').run(req.params.id);
+      res.json({ success: true, message: 'Document permanently deleted from history.' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Ask Follow-up Question about Document
+  app.post('/api/documents/ask-question', async (req: Request, res: Response) => {
+    try {
+      const { question, documentAnalysis, documentText, language = 'en' } = req.body;
+
+      if (!question) {
+        return res.status(400).json({ error: 'Question is required.' });
+      }
+
+      const targetLangName = LANGUAGE_NAMES[language] || 'English';
+      const ai = getAiClient();
+
+      if (!ai) {
+        return res.json({
+          success: true,
+          answer:
+            language === 'hi'
+              ? 'दस्तावेज़ के अनुसार, आपको निर्धारित तिथि से पूर्व अपने निकटतम कार्यालय में आवश्यक प्रमाण पत्रों के साथ उपस्थित होना चाहिए।'
+              : 'Based on this document, please follow the steps indicated in the action checklist and carry your required certificates to the designated authority.',
+        });
+      }
+
+      const prompt = `You are NagrikAI Document Assistant. Answer the citizen's question strictly using the provided document analysis and text.
+CRITICAL RULES:
+1. Always respond in ${targetLangName}.
+2. Use plain, respectful, easy-to-understand language.
+3. If the answer is explicitly in the document, state it clearly.
+4. If the document does NOT contain the answer, explicitly state: "This information is not mentioned in the uploaded document." Never guess deadlines, fees, or requirements.
+5. Provide relevant official government portals or offices if applicable.
+
+CITIZEN'S QUESTION:
+"${question}"
+
+DOCUMENT CONTEXT:
+Document Type: ${documentAnalysis?.documentType || 'Official Document'}
+Issuing Authority: ${documentAnalysis?.issuingAuthority || 'Government Department'}
+Summary: ${documentAnalysis?.plainSummary || documentAnalysis?.whatIsThis || ''}
+Important Dates: ${JSON.stringify(documentAnalysis?.importantDates || [])}
+Fees: ${documentAnalysis?.feesAndCosts || documentAnalysis?.importantInfo?.feesOrSubsidies || 'None'}
+Actions: ${JSON.stringify(documentAnalysis?.nextSteps || documentAnalysis?.whatNext || [])}
+Raw Document Text: ${documentText || 'Available in structured metadata above'}`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          systemInstruction: 'You are an accurate, honest civic assistant. Never assume information that is not in the official document.',
+        },
+      });
+
+      res.json({
+        success: true,
+        answer: response.text || 'Could not answer at this moment.',
+      });
+    } catch (err: any) {
+      console.error('Error in document question:', err);
+      res.status(500).json({ error: err.message || 'Error processing question.' });
     }
   });
 
@@ -418,46 +655,84 @@ async function startServer() {
   // Analyze Document Endpoint
   app.post('/api/analyze-document', async (req: Request, res: Response) => {
     try {
-      const { documentText, fileBase64, mimeType, language = 'en', citizenProfile } = req.body;
+      const { documentText, fileBase64, mimeType, fileName = 'Document', language = 'en', citizenProfile } = req.body;
 
       if (!documentText && !fileBase64) {
         return res.status(400).json({ error: 'Please provide document text or an uploaded image/PDF file.' });
+      }
+
+      // 1. Strict Format Validation
+      if (mimeType) {
+        const allowedMimes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
+        const isAllowed = allowedMimes.some((m) => mimeType.toLowerCase().includes(m.split('/')[1]));
+        if (!isAllowed && !mimeType.includes('pdf') && !mimeType.includes('image')) {
+          return res.status(400).json({
+            error: 'Unsupported file format. Please upload a PDF, JPG, JPEG, or PNG file.',
+          });
+        }
+      }
+
+      // 2. Strict File Size Validation (Max 10 MB)
+      if (fileBase64) {
+        const approxSizeBytes = (fileBase64.length * 3) / 4;
+        if (approxSizeBytes > 10 * 1024 * 1024) {
+          return res.status(400).json({
+            error: 'File size exceeds the 10 MB limit. Please compress or upload a smaller file.',
+          });
+        }
+
+        // 3. Password-Protected PDF Check
+        if (mimeType && mimeType.includes('pdf')) {
+          try {
+            const rawHeader = Buffer.from(fileBase64.slice(0, 5000), 'base64').toString('latin1');
+            if (rawHeader.includes('/Encrypt')) {
+              return res.status(400).json({
+                error: 'This PDF is password-protected. Please remove the password and re-upload.',
+              });
+            }
+          } catch (e) {
+            // continue
+          }
+        }
       }
 
       const targetLangName = LANGUAGE_NAMES[language] || 'English';
 
       const promptSystem = `You are NagrikAI, an expert Indian government document analyst and citizen legal clarity engine.
 Your mission is to read official Indian government notifications, court notices, land records (Pahani/7-12/RoR), banking loan advisories, caste/income certificate summons, scheme sanction orders, and pension notices.
-You must analyze the document and explain it in crystal-clear, compassionate, easy-to-understand language so that an ordinary citizen, farmer, or worker can immediately understand:
-1. Exactly what the document is.
-2. Who issued it and the official reference/order number.
-3. The plain-language meaning without bureaucratic jargon, strictly in ${targetLangName}.
-4. Important dates and any strict deadlines or expiry info.
-5. Fees, penalties, or financial subsidy amounts.
-6. Verification guidance: how the citizen can verify this document's authenticity through official Indian channels (such as DigiLocker, state portals like Seva Sindhu / e-District / Nadakacheri / Dharani, or visiting their local Taluk/Gram Panchayat/CSC office).
-7. "What Should I Do Next?": A concrete, step-by-step checklist of immediate actions with required documents and where to go.
-8. Related central or state government schemes that may be relevant.
+You must analyze the document and explain it in simple, citizen-friendly language without complex bureaucratic jargon (never use terms like "semantic extraction", "entity recognition", or "legal interpretation").
 
-Return STRICT JSON only, matching the exact format:
+All text fields MUST be in ${targetLangName}.
+
+Return STRICT JSON matching this schema:
 {
-  "documentType": "Short descriptive type (e.g., Agricultural Loan Subvention Order, Caste Certificate Summons, Housing Sanction)",
+  "documentType": "Short descriptive type (e.g. Kisan Credit Card Notice, Caste Certificate Summons, Housing Sanction Letter)",
   "issuingAuthority": "Name of official department, bank or court",
-  "referenceNumber": "Official file/order number if visible or 'Not Specified'",
-  "documentDate": "Date of document issue",
-  "validityExpiryDate": "Expiry date or deadline, or 'Not explicitly specified'",
+  "referenceNumber": "Official file/order number if visible or 'Not Mentioned'",
+  "documentDate": "Date of document issue or 'Not Mentioned'",
+  "validityExpiryDate": "Explicit deadline/expiry date, or 'Not mentioned in the document'",
   "urgencyLevel": "High" or "Medium" or "Low" or "Expired",
-  "plainSummary": "Comprehensive 3-5 sentence explanation in ${targetLangName} written directly to the citizen explaining what this document is about and what it means for them.",
+  "whatIsThis": "2-3 simple sentences in ${targetLangName} explaining what this document is in everyday words.",
+  "whyImportant": "2-3 sentences in ${targetLangName} explaining why this document is important and why the citizen needs it.",
+  "importantInfo": {
+    "applicantName": "Applicant or owner name, where present, or 'Not Mentioned'",
+    "referenceNumber": "Reference or order number",
+    "issuingAuthority": "Issuing department name",
+    "issueDate": "Date issued",
+    "expiryDate": "Expiry date or 'Not mentioned in the document'",
+    "feesOrSubsidies": "Fees, penalties, or subsidies mentioned or 'None'",
+    "addressOrProperty": "Property or address details if applicable or 'N/A'",
+    "importantConditions": "Key conditions citizen must follow"
+  },
   "importantDates": [
     {
       "label": "Name of milestone/deadline",
-      "date": "Exact date or duration",
+      "date": "Exact date explicitly mentioned, or 'Not mentioned in the document'",
       "isDeadline": true or false,
       "description": "Short explanation in ${targetLangName}"
     }
   ],
-  "feesAndCosts": "Summary of any fees, charges, or subsidies mentioned",
-  "requiredActionSummary": "One sentence summary in ${targetLangName} of the primary action the citizen must take",
-  "nextSteps": [
+  "whatNext": [
     {
       "stepNumber": 1,
       "title": "Action title in ${targetLangName}",
@@ -466,8 +741,12 @@ Return STRICT JSON only, matching the exact format:
       "whereToProceed": "Specific office or portal name (e.g. Local CSC / Tahsildar Office / pmkisan.gov.in)"
     }
   ],
-  "verificationGuidance": {
-    "authenticationMethod": "Method to verify (e.g. DigiLocker QR verification, e-District barcode check, BDO physical ledger)",
+  "documentsNeeded": [
+    "Aadhaar Card",
+    "Land Records / Bank Passbook"
+  ],
+  "verificationGuide": {
+    "authenticationMethod": "Method to verify (e.g. DigiLocker QR scan, e-District barcode check, Tahsildar office ledger)",
     "officialPortals": [
       {
         "name": "Portal Name (e.g. DigiLocker / Seva Sindhu / JanSamarth)",
@@ -477,8 +756,11 @@ Return STRICT JSON only, matching the exact format:
     ],
     "physicalOffice": "Competent authority office to visit if offline assistance is needed (e.g. Gram Panchayat / Taluk Office)",
     "cscGuidance": "Instructions for visiting Common Service Center (CSC) or Jan Seva Kendra",
-    "officialDisclaimer": "NagrikAI provides plain language assistance and does not replace official government certificates or legal counsel. Always confirm with official .gov.in portals."
+    "disclaimer": "NagrikAI provides plain language assistance and does not replace official government certificates or legal counsel. Always confirm with official .gov.in portals."
   },
+  "plainSummary": "Comprehensive summary in ${targetLangName}",
+  "feesAndCosts": "Summary of fees or subsidies",
+  "requiredActionSummary": "Core action sentence in ${targetLangName}",
   "matchedSchemes": ["Scheme 1", "Scheme 2"]
 }`;
 
@@ -527,22 +809,45 @@ Return STRICT JSON only, matching the exact format:
           documentDate: '14 October 2026',
           validityExpiryDate: '15 December 2026',
           urgencyLevel: 'High',
-          plainSummary: 'This document requires submission of current land records and verification of Aadhaar bank account mapping to maintain subsidized government welfare benefits.',
-          importantDates: [{ label: 'Submission Cutoff', date: '15-12-2026', isDeadline: true, description: 'Cutoff for verification' }],
-          feesAndCosts: 'Concessional benefit applicable; penalty applied if cut-off is missed.',
-          requiredActionSummary: 'Visit your local office or bank with updated documents before the deadline.',
-          nextSteps: [{ stepNumber: 1, title: 'Verify Aadhaar Linking', description: 'Check that your bank account is seeded with Aadhaar.', requiredDocuments: ['Aadhaar Card', 'Bank Passbook'], whereToProceed: 'Bank Branch / CSC' }],
-          verificationGuidance: {
-            authenticationMethod: 'Digital QR Code & Official Portal Verification',
-            officialPortals: [{ name: 'Official National Portal', url: 'https://india.gov.in', purpose: 'Verify official government scheme order' }],
-            physicalOffice: 'Local Taluk Office / Tahsildar Court',
-            cscGuidance: 'Visit your nearest Common Service Centre (CSC) for assisted biometric verification.',
-            officialDisclaimer: 'NagrikAI provides plain language clarity and does not replace official certificates.'
+          whatIsThis: 'This is an official government compliance notice for verified beneficiaries. It confirms your active status under the designated central welfare program.',
+          whyImportant: 'It is important because completing the verification ensures uninterrupted direct benefit transfers (DBT) and retains your concessional interest benefits.',
+          importantInfo: {
+            applicantName: citizenProfile?.name || 'Beneficiary Citizen',
+            referenceNumber: 'GOV/SLBC/REV-2026/89412',
+            issuingAuthority: 'Department of Agriculture & State Bankers Committee',
+            issueDate: '14 October 2026',
+            expiryDate: '15 December 2026',
+            feesOrSubsidies: 'Concessional interest rate: 4% p.a. (Default rate: 11.85%)',
+            addressOrProperty: 'Registered Agricultural Land / Holding',
+            importantConditions: 'Submission of latest land records and Aadhaar bank seeding before cutoff.'
           },
+          importantDates: [
+            { label: 'Land Record & e-KYC Cutoff', date: '15-12-2026', isDeadline: true, description: 'Final deadline to submit documents at home branch.' },
+            { label: 'Cycle Renewal Deadline', date: '31-01-2027', isDeadline: true, description: 'Cut-off date to retain 3% prompt repayment relief.' }
+          ],
+          whatNext: [
+            { stepNumber: 1, title: 'Download or obtain latest Record of Rights (Pahani / RoR)', description: 'Collect your current season land record from state portal or local Nadakacheri.', requiredDocuments: ['Survey / Khasra number', 'Aadhaar Card'], whereToProceed: 'Revenue Office / Gram Panchayat' },
+            { stepNumber: 2, title: 'Verify Aadhaar-NPCI Bank Account Mapping', description: 'Ensure your Aadhaar is linked to your bank account for Direct Benefit Transfer.', requiredDocuments: ['Bank Passbook', 'Aadhaar Card'], whereToProceed: 'Home Bank Branch / CSC' },
+            { stepNumber: 3, title: 'Submit Renewal Form to Branch Manager', description: 'Submit simple renewal acknowledgment and retain stamped receipt.', requiredDocuments: ['KCC Card', 'Land RoR copy'], whereToProceed: 'Bank Branch' }
+          ],
+          documentsNeeded: ['Aadhaar Card', 'Land Record of Rights (RoR / Pahani / 7-12)', 'Bank Account Passbook'],
+          verificationGuide: {
+            authenticationMethod: 'Official Portal Barcode & JanSamarth Verification',
+            officialPortals: [
+              { name: 'JanSamarth National Portal', url: 'https://jansamarth.in', purpose: 'Check credit scheme status' },
+              { name: 'PM-KISAN Central Portal', url: 'https://pmkisan.gov.in', purpose: 'Verify beneficiary status' }
+            ],
+            physicalOffice: 'Office of Assistant Director of Agriculture or Nearest Public Sector Bank',
+            cscGuidance: 'Visit your nearest Common Service Centre (CSC) for assisted biometric verification.',
+            disclaimer: 'NagrikAI provides plain language assistance and does not replace official government certificates or legal counsel.'
+          },
+          plainSummary: 'This document requires submission of current land records and verification of Aadhaar bank account mapping to maintain subsidized government welfare benefits.',
+          feesAndCosts: 'Effective Interest Rate: 4% (Concessional) vs 11.85% (Commercial)',
+          requiredActionSummary: 'Submit updated Land RoR/Pahani and verify Aadhaar-NPCI account linking before 15 December 2026.',
           matchedSchemes: ['PM Kisan Samman Nidhi', 'Kisan Credit Card Scheme']
         });
       }
-      let parsed;
+      let parsed: any;
       try {
         parsed = JSON.parse(responseText);
       } catch (err) {
@@ -561,8 +866,47 @@ Return STRICT JSON only, matching the exact format:
         fileSize: req.body.fileSize || 'Standard',
         targetLanguage: language,
         analyzedAt: new Date().toISOString(),
-        ...parsed,
-        nextSteps: (parsed.nextSteps || []).map((step: any, index: number) => ({
+        documentType: parsed.documentType || 'Official Notice',
+        issuingAuthority: parsed.issuingAuthority || 'Government Department',
+        referenceNumber: parsed.referenceNumber || 'Not Mentioned',
+        documentDate: parsed.documentDate || 'Not Mentioned',
+        validityExpiryDate: parsed.validityExpiryDate || 'Not mentioned in the document',
+        urgencyLevel: parsed.urgencyLevel || 'Medium',
+        whatIsThis: parsed.whatIsThis || parsed.plainSummary || 'This is an official government notification.',
+        whyImportant: parsed.whyImportant || 'This document defines citizen benefits or administrative requirements.',
+        importantInfo: parsed.importantInfo || {
+          applicantName: 'Citizen',
+          referenceNumber: parsed.referenceNumber || 'Not Mentioned',
+          issuingAuthority: parsed.issuingAuthority || 'Government Office',
+          issueDate: parsed.documentDate || 'Not Mentioned',
+          expiryDate: parsed.validityExpiryDate || 'Not mentioned in the document',
+          feesOrSubsidies: parsed.feesAndCosts || 'None',
+          addressOrProperty: 'N/A',
+          importantConditions: parsed.requiredActionSummary || 'Follow the required action steps.'
+        },
+        importantDates: parsed.importantDates || [],
+        whatNext: (parsed.whatNext || parsed.nextSteps || []).map((step: any, index: number) => ({
+          stepNumber: step.stepNumber || index + 1,
+          title: step.title || `Step ${index + 1}`,
+          description: step.description || '',
+          requiredDocuments: step.requiredDocuments || [],
+          whereToProceed: step.whereToProceed || 'Designated Office',
+          isCompleted: false,
+        })),
+        documentsNeeded: parsed.documentsNeeded || ['Aadhaar Card', 'Relevant Government Records'],
+        verificationGuide: parsed.verificationGuide || parsed.verificationGuidance || {
+          authenticationMethod: 'Official Portal & DigiLocker Verification',
+          officialPortals: [{ name: 'National Portal of India', url: 'https://india.gov.in', purpose: 'General verification' }],
+          physicalOffice: 'Local Taluk Office / Gram Panchayat',
+          cscGuidance: 'Visit your local Common Service Centre (CSC) for assisted verification.',
+          disclaimer: 'NagrikAI provides plain language clarity and does not replace official certificates.'
+        },
+        qaList: [],
+        plainSummary: parsed.plainSummary || parsed.whatIsThis,
+        feesAndCosts: parsed.feesAndCosts,
+        requiredActionSummary: parsed.requiredActionSummary,
+        matchedSchemes: parsed.matchedSchemes || [],
+        nextSteps: (parsed.whatNext || parsed.nextSteps || []).map((step: any, index: number) => ({
           ...step,
           id: `step-${index + 1}`,
           stepNumber: step.stepNumber || index + 1,

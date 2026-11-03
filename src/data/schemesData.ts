@@ -650,7 +650,7 @@ export function evaluateSchemeEligibility(
 
   // 6. Occupation check
   if (scheme.eligibility.occupations && scheme.eligibility.occupations.length > 0) {
-    if (scheme.eligibility.occupations.includes(profile.occupation)) {
+    if (scheme.eligibility.occupations.includes(profile.occupation as any)) {
       reasons.push(`Your occupation as ${profile.occupation} meets the primary target beneficiary criteria.`);
     } else {
       // Check if student status matches

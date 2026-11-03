@@ -5,16 +5,24 @@
 
 import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
-import { CitizenPassCard } from './components/CitizenPassCard';
-import { CitizenLoginModal } from './components/CitizenLoginModal';
-import { RealisticLoginPage } from './components/RealisticLoginPage';
-import { DocumentSimplifier } from './components/DocumentSimplifier';
-import { SchemeFinder } from './components/SchemeFinder';
+import { AuthPage } from './components/AuthPage';
+import { MainDashboard } from './components/MainDashboard';
+import { SchemeEligibilityWorkflow } from './components/SchemeEligibilityWorkflow';
+import { DocumentAssistanceStudio } from './components/DocumentAssistanceStudio';
 import { GovUpdatesFeed } from './components/GovUpdatesFeed';
-import { ApplicationTracker } from './components/ApplicationTracker';
+import { MyActivityPage } from './components/MyActivityPage';
+import { ProfilePage } from './components/ProfilePage';
 import { VoiceAssistantModal } from './components/VoiceAssistantModal';
 import { Footer } from './components/Footer';
-import { SupportedLanguage, CitizenProfile, TrackedApplication } from './types';
+import {
+  SupportedLanguage,
+  CitizenProfile,
+  User as UserType,
+  SavedScheme,
+  TrackedApplication,
+  Scheme,
+  DocumentAnalysis
+} from './types';
 
 export default function App() {
   const [language, setLanguage] = useState<SupportedLanguage>(() => {
@@ -22,6 +30,20 @@ export default function App() {
     return (saved as SupportedLanguage) || 'en';
   });
 
+  // Current authenticated user (from SQLite)
+  const [user, setUser] = useState<UserType | null>(() => {
+    const saved = localStorage.getItem('nagrik_user');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  });
+
+  // Current citizen demographic profile (from SQLite)
   const [citizen, setCitizen] = useState<CitizenProfile | null>(() => {
     const saved = localStorage.getItem('nagrik_citizen');
     if (saved) {
@@ -34,9 +56,15 @@ export default function App() {
     return null;
   });
 
+  // Active view tab: 'dashboard' | 'schemes' | 'documents' | 'updates' | 'activity' | 'profile'
+  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+
+  // SQLite data state
+  const [savedSchemes, setSavedSchemes] = useState<SavedScheme[]>([]);
+  const [recentDocuments, setRecentDocuments] = useState<any[]>([]);
   const [applications, setApplications] = useState<TrackedApplication[]>([]);
-  const [currentTab, setCurrentTab] = useState<string>('documents');
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+
+  // UI state
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [activeDocSummaryForVoice, setActiveDocSummaryForVoice] = useState<string | undefined>(undefined);
   const [dbStatusNotice, setDbStatusNotice] = useState<string | null>(null);
@@ -46,7 +74,15 @@ export default function App() {
     localStorage.setItem('nagrik_lang', language);
   }, [language]);
 
-  // Sync citizen state with localStorage
+  // Sync user & citizen state with localStorage
+  useEffect(() => {
+    if (user) {
+      localStorage.setItem('nagrik_user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('nagrik_user');
+    }
+  }, [user]);
+
   useEffect(() => {
     if (citizen) {
       localStorage.setItem('nagrik_citizen', JSON.stringify(citizen));
@@ -55,31 +91,44 @@ export default function App() {
     }
   }, [citizen]);
 
-  // Load applications from SQLite whenever citizen changes
+  // Load user data from SQLite when citizen / user is available
   useEffect(() => {
     if (citizen?.id) {
-      fetchApplicationsFromDb(citizen.id);
-    } else {
-      // Auto-load default citizen from SQLite on first visit if none selected
-      fetchDefaultCitizen();
+      fetchUserDataFromDb(citizen.id);
     }
   }, [citizen?.id]);
 
-  const fetchDefaultCitizen = async () => {
-    try {
-      const res = await fetch('/api/citizen/profile/cit-ramesh-01');
-      const data = await res.json();
-      if (data.success && data.citizen) {
-        setCitizen(data.citizen);
-      }
-    } catch (err) {
-      console.warn('Could not auto-fetch default SQLite citizen:', err);
-    }
+  const showToast = (message: string) => {
+    setDbStatusNotice(message);
+    setTimeout(() => setDbStatusNotice(null), 4000);
   };
 
-  const fetchApplicationsFromDb = async (citizenId: string) => {
+  const fetchUserDataFromDb = async (citizenId: string) => {
+    // 1. Fetch saved schemes
     try {
-      const res = await fetch(`/api/applications/${citizenId}`);
+      const res = await fetch(`/api/user/saved-schemes?citizenId=${encodeURIComponent(citizenId)}`);
+      const data = await res.json();
+      if (data.success && data.savedSchemes) {
+        setSavedSchemes(data.savedSchemes);
+      }
+    } catch (err) {
+      console.warn('Error fetching saved schemes from SQLite:', err);
+    }
+
+    // 2. Fetch document analysis history
+    try {
+      const res = await fetch(`/api/documents/history/${encodeURIComponent(citizenId)}`);
+      const data = await res.json();
+      if (data.success && data.documents) {
+        setRecentDocuments(data.documents);
+      }
+    } catch (err) {
+      console.warn('Error fetching document history from SQLite:', err);
+    }
+
+    // 3. Fetch tracked applications
+    try {
+      const res = await fetch(`/api/applications/${encodeURIComponent(citizenId)}`);
       const data = await res.json();
       if (data.success && data.applications) {
         setApplications(data.applications);
@@ -89,77 +138,147 @@ export default function App() {
     }
   };
 
-  const handleSaveCitizen = async (profile: CitizenProfile) => {
-    // Save to SQLite backend
+  const handleAuthSuccess = (authenticatedUser: UserType, authenticatedCitizen: CitizenProfile) => {
+    setUser(authenticatedUser);
+    setCitizen(authenticatedCitizen);
+    setCurrentTab('dashboard');
+    showToast(`Authenticated as ${authenticatedUser.name || authenticatedCitizen.name}`);
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    setCitizen(null);
+    localStorage.removeItem('nagrik_user');
+    localStorage.removeItem('nagrik_citizen');
+    setCurrentTab('dashboard');
+    showToast('Signed out successfully.');
+  };
+
+  const handleUpdateCitizenProfile = async (updatedProfile: CitizenProfile) => {
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(profile),
+        body: JSON.stringify(updatedProfile),
       });
       const data = await res.json();
       if (data.success && data.citizen) {
         setCitizen(data.citizen);
-        setDbStatusNotice(`Citizen details saved to SQLite database successfully!`);
-        setTimeout(() => setDbStatusNotice(null), 4000);
+        showToast('Profile updated & synchronized in SQLite.');
       } else {
-        setCitizen(profile);
+        setCitizen(updatedProfile);
       }
     } catch (err) {
-      setCitizen(profile);
+      setCitizen(updatedProfile);
     }
   };
 
-  const handleLoginSuccess = (authenticatedCitizen: CitizenProfile) => {
-    setCitizen(authenticatedCitizen);
-    setCurrentTab('documents');
-    setDbStatusNotice(`Authenticated from SQLite database as ${authenticatedCitizen.name}!`);
-    setTimeout(() => setDbStatusNotice(null), 4000);
+  const handleSaveScheme = async (scheme: Scheme, status: 'Likely Eligible' | 'May Be Eligible' | 'Not Eligible') => {
+    const citizenId = citizen?.id || user?.id || 'cit-ramesh-01';
+    try {
+      const res = await fetch('/api/user/saved-schemes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          citizenId,
+          schemeId: scheme.id,
+          schemeName: scheme.name,
+          ministry: scheme.ministry,
+          benefits: scheme.benefitsSummary,
+          eligibilityStatus: status,
+          officialPortal: scheme.officialPortalUrl,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.savedScheme) {
+        setSavedSchemes((prev) => [data.savedScheme, ...prev]);
+        showToast(`Saved "${scheme.name}" to your SQLite records!`);
+      }
+    } catch (err) {
+      console.warn('Could not save scheme to SQLite:', err);
+    }
   };
 
-  const handleAddToTracker = async (item: TrackedApplication) => {
-    setApplications((prev) => [item, ...prev]);
+  const handleRemoveSavedScheme = async (id: string) => {
+    setSavedSchemes((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await fetch(`/api/user/saved-schemes/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      showToast('Scheme removed from saved records.');
+    } catch (err) {
+      console.warn('Could not delete saved scheme in SQLite:', err);
+    }
+  };
 
-    // Save to SQLite backend
+  const handleDeleteDocument = async (id: string) => {
+    setRecentDocuments((prev) => prev.filter((d) => d.id !== id));
+    try {
+      await fetch(`/api/documents/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      showToast('Document record deleted permanently from SQLite.');
+    } catch (err) {
+      console.warn('Could not delete document record in SQLite:', err);
+    }
+  };
+
+  const handleDocumentAnalyzed = (analysis: DocumentAnalysis) => {
+    // Add to recent documents state and toast
+    setRecentDocuments((prev) => [
+      {
+        id: analysis.id,
+        fileName: analysis.fileName,
+        documentType: analysis.importantInfo?.issuingAuthority || 'Official Document',
+        summary: analysis.whatIsThis,
+        date: new Date().toLocaleDateString('en-IN'),
+        referenceNumber: analysis.importantInfo?.referenceNumber,
+      },
+      ...prev,
+    ]);
+    showToast('Document analyzed & record stored in SQLite database.');
+  };
+
+  const handleAddApplication = async (newApp: TrackedApplication) => {
+    setApplications((prev) => [newApp, ...prev]);
     try {
       await fetch('/api/applications', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...item,
+          ...newApp,
           citizenId: citizen?.id || 'cit-ramesh-01',
         }),
       });
-      setDbStatusNotice('Application record saved into SQLite database.');
-      setTimeout(() => setDbStatusNotice(null), 3500);
+      showToast('Application record created in SQLite.');
     } catch (err) {
-      console.warn('Could not save application to SQLite:', err);
+      console.warn('Could not save application in SQLite:', err);
     }
   };
 
-  const handleUpdateStatus = async (id: string, status: TrackedApplication['status']) => {
+  const handleUpdateApplicationStatus = async (id: string, status: TrackedApplication['status']) => {
     setApplications((prev) =>
       prev.map((app) => (app.id === id ? { ...app, status } : app))
     );
-
     try {
-      await fetch(`/api/applications/${id}`, {
+      await fetch(`/api/applications/${encodeURIComponent(id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
       });
+      showToast(`Application status updated to ${status}.`);
     } catch (err) {
-      console.warn('Could not update application in SQLite:', err);
+      console.warn('Could not update application status in SQLite:', err);
     }
   };
 
   const handleDeleteApplication = async (id: string) => {
     setApplications((prev) => prev.filter((app) => app.id !== id));
-
     try {
-      await fetch(`/api/applications/${id}`, {
+      await fetch(`/api/applications/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       });
+      showToast('Application record removed.');
     } catch (err) {
       console.warn('Could not delete application in SQLite:', err);
     }
@@ -170,32 +289,48 @@ export default function App() {
     setIsVoiceModalOpen(true);
   };
 
+  // If user is NOT authenticated, display clean, trustworthy Login / Sign Up page first
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col font-sans">
+        <AuthPage
+          onAuthSuccess={handleAuthSuccess}
+          language={language}
+        />
+        <Footer language={language} />
+      </div>
+    );
+  }
+
+  // Authenticated Citizen Portal Flow
   return (
     <div className="min-h-screen bg-stone-100/70 text-slate-900 flex flex-col font-sans selection:bg-orange-200 selection:text-orange-950">
-      {/* Top Navbar */}
+      {/* Top Navigation */}
       <Navbar
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
         language={language}
         setLanguage={setLanguage}
+        user={user}
         citizen={citizen}
-        onOpenLogin={() => setCurrentTab('login')}
+        savedCount={savedSchemes.length + recentDocuments.length}
         onOpenVoice={() => {
           setActiveDocSummaryForVoice(undefined);
           setIsVoiceModalOpen(true);
         }}
+        onLogout={handleLogout}
       />
 
       {/* Database Status Toast Notification */}
       {dbStatusNotice && (
-        <div className="sticky top-16 z-30 max-w-7xl mx-auto px-4 sm:px-6 pt-2">
-          <div className="bg-emerald-800 text-white text-xs px-4 py-2.5 rounded-xl shadow-lg flex items-center justify-between border border-emerald-700 animate-in fade-in slide-in-from-top-2">
+        <div className="sticky top-16 z-30 max-w-6xl mx-auto px-4 sm:px-6 pt-2">
+          <div className="bg-emerald-900 text-white text-xs px-4 py-2.5 rounded-xl shadow-lg flex items-center justify-between border border-emerald-700 animate-in fade-in slide-in-from-top-2">
             <span className="font-medium">
               💾 <strong>SQLite Database:</strong> {dbStatusNotice}
             </span>
             <button
               onClick={() => setDbStatusNotice(null)}
-              className="text-emerald-200 hover:text-white font-bold ml-4"
+              className="text-emerald-300 hover:text-white font-bold ml-4"
             >
               ✕
             </button>
@@ -203,83 +338,86 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-5 pb-12 space-y-6">
-        {/* If tab is 'login', render the full realistic civic login page */}
-        {currentTab === 'login' ? (
-          <RealisticLoginPage
-            onLoginSuccess={handleLoginSuccess}
+      {/* Main View Area */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-6 pb-14">
+        {/* View 1: Main Dashboard (Service Cards, Recent Docs, Saved Schemes, Helplines) */}
+        {currentTab === 'dashboard' && (
+          <MainDashboard
+            user={user}
+            citizen={citizen}
             language={language}
-            onCancel={citizen ? () => setCurrentTab('documents') : undefined}
+            setLanguage={setLanguage}
+            onSelectService={(service) => setCurrentTab(service)}
+            onOpenUpdates={() => setCurrentTab('updates')}
+            onOpenMyActivity={() => setCurrentTab('activity')}
+            onOpenVoice={() => setIsVoiceModalOpen(true)}
+            savedSchemes={savedSchemes}
+            recentDocuments={recentDocuments}
+            onRemoveSavedScheme={handleRemoveSavedScheme}
+            onDeleteDocument={handleDeleteDocument}
+            onOpenDocumentDetail={() => setCurrentTab('documents')}
           />
-        ) : (
-          <>
-            {/* Citizen Digital Pass Header Widget */}
-            <CitizenPassCard
-              citizen={citizen}
-              onOpenEdit={() => setCurrentTab('login')}
-              onViewSchemes={() => setCurrentTab('schemes')}
-              language={language}
-            />
+        )}
 
-            {/* Tab 1: Document Simplification Studio */}
-            {currentTab === 'documents' && (
-              <DocumentSimplifier
-                citizen={citizen}
-                language={language}
-                onAddToTracker={handleAddToTracker}
-                onOpenVoiceWithContext={handleOpenVoiceWithContext}
-              />
-            )}
+        {/* View 2: Government Scheme Eligibility (4-step guided workflow) */}
+        {currentTab === 'schemes' && (
+          <SchemeEligibilityWorkflow
+            citizen={citizen}
+            language={language}
+            onUpdateCitizenProfile={handleUpdateCitizenProfile}
+            onSaveScheme={handleSaveScheme}
+            onBackToDashboard={() => setCurrentTab('dashboard')}
+          />
+        )}
 
-            {/* Tab 2: Scheme Finder */}
-            {currentTab === 'schemes' && (
-              <SchemeFinder
-                citizen={citizen}
-                language={language}
-                onOpenLogin={() => setCurrentTab('login')}
-                onTrackScheme={(schemeName) => {
-                  handleAddToTracker({
-                    id: `track-${Date.now()}`,
-                    schemeOrDocName: schemeName,
-                    trackingNumber: `SCHEME-${Math.floor(100000 + Math.random() * 900000)}`,
-                    submittedDate: new Date().toLocaleDateString('en-IN'),
-                    status: 'Draft',
-                    notes: 'Application draft initiated from Scheme Finder.',
-                    nextFollowUpDate: '30-11-2026',
-                  });
-                  setCurrentTab('tracker');
-                }}
-              />
-            )}
+        {/* View 3: Document Assistance Studio (Upload limitations, Sections A-G, Q&A) */}
+        {currentTab === 'documents' && (
+          <DocumentAssistanceStudio
+            citizen={citizen}
+            language={language}
+            onBackToDashboard={() => setCurrentTab('dashboard')}
+            onDocumentAnalyzed={handleDocumentAnalyzed}
+          />
+        )}
 
-            {/* Tab 3: Government Updates */}
-            {currentTab === 'updates' && <GovUpdatesFeed language={language} />}
+        {/* View 4: Important Government Updates */}
+        {currentTab === 'updates' && (
+          <div className="max-w-5xl mx-auto">
+            <GovUpdatesFeed language={language} />
+          </div>
+        )}
 
-            {/* Tab 4: Application & Deadline Tracker */}
-            {currentTab === 'tracker' && (
-              <ApplicationTracker
-                applications={applications}
-                onAddApplication={handleAddToTracker}
-                onUpdateStatus={handleUpdateStatus}
-                onDeleteApplication={handleDeleteApplication}
-                language={language}
-              />
-            )}
-          </>
+        {/* View 5: My Activity (Saved Schemes, Analyzed Documents, Application Tracker) */}
+        {currentTab === 'activity' && (
+          <MyActivityPage
+            citizen={citizen}
+            savedSchemes={savedSchemes}
+            recentDocuments={recentDocuments}
+            applications={applications}
+            language={language}
+            onRemoveSavedScheme={handleRemoveSavedScheme}
+            onDeleteDocument={handleDeleteDocument}
+            onUpdateApplicationStatus={handleUpdateApplicationStatus}
+            onDeleteApplication={handleDeleteApplication}
+            onAddApplication={handleAddApplication}
+            onNavigateToSchemes={() => setCurrentTab('schemes')}
+            onNavigateToDocuments={() => setCurrentTab('documents')}
+          />
+        )}
+
+        {/* View 6: Citizen Profile (Demographic & Eligibility Details synced to SQLite) */}
+        {currentTab === 'profile' && (
+          <ProfilePage
+            user={user}
+            citizen={citizen}
+            language={language}
+            onSaveCitizen={handleUpdateCitizenProfile}
+            onNavigateToSchemes={() => setCurrentTab('schemes')}
+          />
         )}
       </main>
 
-      {/* Citizen Profile Modal (quick edit) */}
-      <CitizenLoginModal
-        isOpen={isLoginModalOpen}
-        onClose={() => setIsLoginModalOpen(false)}
-        citizen={citizen}
-        onSaveCitizen={handleSaveCitizen}
-        language={language}
-      />
-
-      {/* Multilingual Voice Assistant Modal ("Nagrik Sahayak") */}
+      {/* Multilingual Voice Assistant Modal */}
       <VoiceAssistantModal
         isOpen={isVoiceModalOpen}
         onClose={() => setIsVoiceModalOpen(false)}
@@ -289,7 +427,7 @@ export default function App() {
         activeDocumentSummary={activeDocSummaryForVoice}
       />
 
-      {/* Footer */}
+      {/* Official Civic Footer */}
       <Footer language={language} />
     </div>
   );

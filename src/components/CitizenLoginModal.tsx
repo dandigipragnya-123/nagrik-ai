@@ -132,19 +132,19 @@ export const CitizenLoginModal: React.FC<CitizenLoginModalProps> = ({
 
   const [name, setName] = useState(citizen?.name || '');
   const [age, setAge] = useState<number>(citizen?.age || 38);
-  const [gender, setGender] = useState<'Male' | 'Female' | 'Transgender' | 'Other'>(citizen?.gender || 'Male');
+  const [gender, setGender] = useState<'Male' | 'Female' | 'Transgender' | 'Other'>((citizen?.gender as any) || 'Male');
   const [caste, setCaste] = useState<CasteCategory>(citizen?.caste || 'OBC');
   const [annualIncome, setAnnualIncome] = useState<number>(citizen?.annualIncome || 150000);
   const [state, setState] = useState(citizen?.state || 'Karnataka');
   const [district, setDistrict] = useState(citizen?.district || 'Bengaluru');
-  const [areaType, setAreaType] = useState<'Rural' | 'Urban' | 'Semi-Urban'>(citizen?.areaType || 'Rural');
+  const [areaType, setAreaType] = useState<'Rural' | 'Urban' | 'Semi-Urban'>((citizen?.areaType as any) || 'Rural');
   const [pincode, setPincode] = useState(citizen?.pincode || '560001');
-  const [occupation, setOccupation] = useState<OccupationType>(citizen?.occupation || 'Farmer / Agriculture');
+  const [occupation, setOccupation] = useState<OccupationType>((citizen?.occupation as any) || 'Farmer / Agriculture');
   const [hasLand, setHasLand] = useState(citizen?.hasLand ?? true);
   const [landAreaAcres, setLandAreaAcres] = useState<number>(citizen?.landAreaAcres || 2);
   const [hasRationCard, setHasRationCard] = useState(citizen?.hasRationCard ?? true);
   const [rationCardType, setRationCardType] = useState<'AAY (Antyodaya)' | 'BPL (Below Poverty Line)' | 'APL (Above Poverty Line)' | 'None'>(
-    citizen?.rationCardType || 'BPL (Below Poverty Line)'
+    (citizen?.rationCardType as any) || 'BPL (Below Poverty Line)'
   );
   const [isDifferentlyAbled, setIsDifferentlyAbled] = useState(citizen?.isDifferentlyAbled || false);
   const [isStudent, setIsStudent] = useState(citizen?.isStudent || false);
@@ -192,21 +192,21 @@ export const CitizenLoginModal: React.FC<CitizenLoginModalProps> = ({
   const handleApplyPreset = (preset: CitizenProfile) => {
     setName(preset.name);
     setAge(preset.age);
-    setGender(preset.gender);
+    setGender((preset.gender as any) || 'Male');
     setCaste(preset.caste);
     setAnnualIncome(preset.annualIncome);
     setState(preset.state);
     setDistrict(preset.district);
-    setAreaType(preset.areaType);
-    setPincode(preset.pincode);
-    setOccupation(preset.occupation);
-    setHasLand(preset.hasLand);
+    setAreaType((preset.areaType as any) || 'Rural');
+    setPincode(preset.pincode || '560001');
+    setOccupation((preset.occupation as any) || 'Farmer / Agriculture');
+    setHasLand(preset.hasLand ?? false);
     setLandAreaAcres(preset.landAreaAcres || 2);
-    setHasRationCard(preset.hasRationCard);
-    setRationCardType(preset.rationCardType || 'BPL (Below Poverty Line)');
-    setIsDifferentlyAbled(preset.isDifferentlyAbled);
-    setIsStudent(preset.isStudent);
-    setIsSingleWomanOrWidow(preset.isSingleWomanOrWidow);
+    setHasRationCard(preset.hasRationCard ?? false);
+    setRationCardType((preset.rationCardType as any) || 'BPL (Below Poverty Line)');
+    setIsDifferentlyAbled(preset.isDifferentlyAbled ?? false);
+    setIsStudent(preset.isStudent ?? false);
+    setIsSingleWomanOrWidow(preset.isSingleWomanOrWidow ?? false);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
